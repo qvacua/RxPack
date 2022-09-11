@@ -3,6 +3,7 @@
 
 import Foundation
 import MessagePack
+import MPack
 import RxSwift
 import Socket
 
@@ -189,7 +190,7 @@ public final class RxMsgpackRpc {
           let readBytes = try socket.read(into: &readData)
           defer { readData.count = 0 }
           if readBytes > 0 {
-            let values = try unpackAll(readData)
+            let values = try MPackUnpacker.unpackAll(from: readData)
             values.forEach(self.processMessage)
           } else if readBytes == 0 {
             if socket.remoteConnectionClosed {
