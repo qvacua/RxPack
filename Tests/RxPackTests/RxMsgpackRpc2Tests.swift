@@ -1,6 +1,7 @@
 /// Tae Won Ha - http://taewon.de - @hataewon
 /// See LICENSE
 
+import Foundation
 import MessagePack
 import Nimble
 import RxBlocking
@@ -28,41 +29,56 @@ class RxMsgpackRpcr2Tests: XCTestCase {
 
   override func setUp() {
     super.setUp()
+
+    self.server = TestSocketServer()
+    self.server.path = FileManager.default
+      .temporaryDirectory
+      .appendingPathComponent("\(UUID().uuidString).sock")
+      .path
   }
 
   override func tearDown() {
+    _ = try! self.msgpackRpc.stop().toBlocking().first()
+    self.server.shutdownServer()
+
     super.tearDown()
   }
 
+  func assertMsgsFromClient(assertFn: @escaping TestSocketServer.DataReadCallback) {
+    self.server.dataReadCallback = assertFn
+  }
+
+  func assertMsgsFromServer(assertFn: @escaping (RxMsgpackRpc.Message) -> Void) {
+    self.msgpackRpc.stream
+      .observe(on: self.scheduler)
+      .subscribe(onNext: assertFn)
+      .disposed(by: self.disposeBag)
+  }
+
   func testExample() {
-    self.server = TestSocketServer(
-      path: "/tmp/echo.sock",
-      readBufferSize: Socket.SOCKET_MINIMUM_READ_BUFFER_SIZE
-    ) { data, _ in
+    self.server.readBufferSize = Socket.SOCKET_MINIMUM_READ_BUFFER_SIZE
+
+    self.assertMsgsFromClient { data, _ in
       // Assert msgs from client here
       let value = try! unpackAll(data)
       print(value)
     }
 
-    self.msgpackRpc.stream
-      .observe(on: self.scheduler)
-      .subscribe { msg in
-        // Assert msgs from server here
-        switch msg.element {
-        case let .response(msgid, error, result):
-          break
-        case let .notification(method, params):
-          if method == "notification-data-int" {
-            print("got message: \(params)")
-            _ = try? self.msgpackRpc.stop().toBlocking().first()
-            self.server.shutdownServer()
-            self.testEndSemaphore.signal()
-          }
-        default:
-          break
+    self.assertMsgsFromServer { msg in
+      switch msg {
+      case let .response(msgid, error, result):
+        break
+      case let .notification(method, params):
+        if method == "notification-data-int" {
+          print("got message: \(params)")
+          _ = try? self.msgpackRpc.stop().toBlocking().first()
+          self.server.shutdownServer()
+          self.testEndSemaphore.signal()
         }
+      default:
+        break
       }
-      .disposed(by: self.disposeBag)
+    }
 
     DispatchQueue.global(qos: .default).async {
       self.clientSocket = self.server.clientSocket()
@@ -71,12 +87,16 @@ class RxMsgpackRpcr2Tests: XCTestCase {
 
     DispatchQueue.global(qos: .default).async {
       usleep(500)
-      _ = try! self.msgpackRpc.run(at: "/tmp/echo.sock", readBufferSize: 1024).toBlocking().first()
+      _ = try! self.msgpackRpc.run(at: self.server.path, readBufferSize: 1024).toBlocking().first()
       _ = self.serverAcceptSemaphore.wait(timeout: .now().advanced(by: .microseconds(500)))
 
       // Send msgs to server
       _ = try? self.msgpackRpc
-        .request(method: "first-method", params: [.uint(0), .uint(1)], expectsReturnValue: false)
+        .request(
+          method: "first-method",
+          params: [.uint(0), .uint(1)],
+          expectsReturnValue: false
+        )
         .toBlocking().first()
 
       // Send msgs to client
@@ -84,15 +104,13 @@ class RxMsgpackRpcr2Tests: XCTestCase {
         .write(from: pack(.array([
           .uint(RxMsgpackRpc.MessageType.notification.rawValue),
           .string("notification-data-int"),
-          .array([.binary(Data.randomData(ofCount: 1024 * 1024)), .uint(17)]),
+          .array([.binary(Data.randomData(ofCount: 1024 * 1024)),
+                  .uint(17)]),
         ])))
     }
 
     let timeoutResult = self.testEndSemaphore.wait(timeout: .now().advanced(by: .seconds(2 * 60)))
     expect(timeoutResult).to(equal(.success))
-
-    _ = try! self.msgpackRpc.stop().toBlocking().first()
-    self.server.shutdownServer()
   }
 }
 
@@ -103,17 +121,11 @@ class TestSocketServer {
 
   private var listenSocket: Socket!
 
-  let path: String
-  let readBufferSize: Int
   var connectedSocket: Socket!
 
-  let dataReadCallback: DataReadCallback
-
-  init(path: String, readBufferSize: Int, dataReadCallback: @escaping DataReadCallback) {
-    self.path = path
-    self.readBufferSize = readBufferSize
-    self.dataReadCallback = dataReadCallback
-  }
+  var path: String = "/tmp/com.qvacua.RxMsgpackRpc.RxMsgpackRpcTest.sock"
+  var readBufferSize: Int = Socket.SOCKET_MINIMUM_READ_BUFFER_SIZE
+  var dataReadCallback: DataReadCallback = { _, _ in }
 
   deinit { self.shutdownServer() }
 
