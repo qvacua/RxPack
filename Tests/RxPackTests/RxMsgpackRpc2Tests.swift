@@ -39,7 +39,7 @@ class RxMsgpackRpcr2Tests: XCTestCase {
       path: "/tmp/echo.sock",
       readBufferSize: Socket.SOCKET_MINIMUM_READ_BUFFER_SIZE
     ) { data, _ in
-      // Assertions here
+      // Assert msgs from client here
       let value = try! unpackAll(data)
       print(value)
     }
@@ -47,7 +47,7 @@ class RxMsgpackRpcr2Tests: XCTestCase {
     self.msgpackRpc.stream
       .observe(on: self.scheduler)
       .subscribe { msg in
-        // Assertions here
+        // Assert msgs from server here
         switch msg.element {
         case let .response(msgid, error, result):
           break
@@ -74,9 +74,11 @@ class RxMsgpackRpcr2Tests: XCTestCase {
       _ = try! self.msgpackRpc.run(at: "/tmp/echo.sock", readBufferSize: 1024).toBlocking().first()
       _ = self.serverAcceptSemaphore.wait(timeout: .now().advanced(by: .microseconds(500)))
 
+      // Send msgs to server
       _ = try? self.msgpackRpc.request(method: "test", params: [], expectsReturnValue: false)
         .toBlocking().first()
 
+      // Send msgs to client
       try! self.clientSocket
         .write(from: pack(.array([
           .uint(2),
@@ -104,12 +106,12 @@ class TestSocketServer {
   let readBufferSize: Int
   var connectedSocket: Socket!
 
-  let dataReadCallBack: DataReadCallback
+  let dataReadCallback: DataReadCallback
 
   init(path: String, readBufferSize: Int, dataReadCallback: @escaping DataReadCallback) {
     self.path = path
     self.readBufferSize = readBufferSize
-    self.dataReadCallBack = dataReadCallback
+    self.dataReadCallback = dataReadCallback
   }
 
   deinit { self.shutdownServer() }
@@ -134,7 +136,7 @@ class TestSocketServer {
         let bytesRead = try! socket.read(into: &readData)
 
         if bytesRead > 0 {
-          self.dataReadCallBack(readData, bytesRead)
+          self.dataReadCallback(readData, bytesRead)
         }
 
         if bytesRead == 0 {
