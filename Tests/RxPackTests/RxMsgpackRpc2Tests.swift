@@ -52,7 +52,7 @@ class RxMsgpackRpcr2Tests: XCTestCase {
         case let .response(msgid, error, result):
           break
         case let .notification(method, params):
-          if method == "some_method" {
+          if method == "notification-data-int" {
             print("got message: \(params)")
             _ = try? self.msgpackRpc.stop().toBlocking().first()
             self.server.shutdownServer()
@@ -75,15 +75,16 @@ class RxMsgpackRpcr2Tests: XCTestCase {
       _ = self.serverAcceptSemaphore.wait(timeout: .now().advanced(by: .microseconds(500)))
 
       // Send msgs to server
-      _ = try? self.msgpackRpc.request(method: "test", params: [], expectsReturnValue: false)
+      _ = try? self.msgpackRpc
+        .request(method: "first-method", params: [.uint(0), .uint(1)], expectsReturnValue: false)
         .toBlocking().first()
 
       // Send msgs to client
       try! self.clientSocket
         .write(from: pack(.array([
-          .uint(2),
-          .string("some_method"),
-          .array([.binary(Data.randomData(ofCount: 1024 * 1024)), .uint(12)]),
+          .uint(RxMsgpackRpc.MessageType.notification.rawValue),
+          .string("notification-data-int"),
+          .array([.binary(Data.randomData(ofCount: 1024 * 1024)), .uint(17)]),
         ])))
     }
 

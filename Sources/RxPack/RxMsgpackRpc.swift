@@ -12,7 +12,7 @@ public final class RxMsgpackRpc {
 
   public typealias Value = MessagePackValue
 
-  enum MessageType: UInt64 {
+  public enum MessageType: UInt64 {
     case request = 0
     case response = 1
     case notification = 2
