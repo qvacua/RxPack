@@ -74,33 +74,25 @@ class RxMsgpackRpcr2Tests: XCTestCase {
       self.msgpackRpc
         .request(method: "first-request", params: [.uint(123)], expectsReturnValue: true)
         .observe(on: self.responseScheduler)
-        .subscribe { event in
-          guard case let .success(response) = event else {
-            preconditionFailure("No response for 1st request")
-          }
-
+        .subscribe(onSuccess: { response in
           expect(response.msgid).to(equal(0))
           expect(response.error).to(equal(.nil))
           expect(response.result).to(equal(.float(0.321)))
           responseCount += 1
 
           self.signalEndOfTest()
-        }
+        })
         .disposed(by: self.disposeBag)
 
       self.msgpackRpc
         .request(method: "second-request", params: [.uint(321)], expectsReturnValue: true)
         .observe(on: self.responseScheduler)
-        .subscribe { event in
-          guard case let .success(response) = event else {
-            preconditionFailure("No response for 2nd request")
-          }
-
+        .subscribe(onSuccess: { response in
           expect(response.msgid).to(equal(1))
           expect(response.error).to(equal(.nil))
           expect(response.result).to(equal(.float(0.123)))
           responseCount += 1
-        }
+        })
         .disposed(by: self.disposeBag)
 
       let timeout = beginAssertionsSemaphore.wait(timeout: .now().advanced(by: .seconds(10)))
