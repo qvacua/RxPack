@@ -10,12 +10,6 @@ import RxSwift
 import Socket
 import XCTest
 
-extension Data {
-  static func randomData(ofCount count: Int) -> Data {
-    Data((0..<count).map { _ in UInt8.random(in: UInt8.min...UInt8.max) })
-  }
-}
-
 class RxMsgpackRpcr2Tests: XCTestCase {
   typealias Value = RxMsgpackRpc.Value
   typealias Message = RxMsgpackRpc.Message
@@ -144,11 +138,11 @@ class RxMsgpackRpcr2Tests: XCTestCase {
     self.runClientAndSendRequests(readBufferSize: Socket.SOCKET_MINIMUM_READ_BUFFER_SIZE) {
       let data1 = dataForNotification(
         method: "first-msg",
-        params: [.uint(321), .binary(Data.randomData(ofCount: 321))]
+        params: [.uint(321), .binary(Data.random(ofCount: 321))]
       )
       let data2 = dataForNotification(
         method: "second-msg",
-        params: [.binary(Data.randomData(ofCount: 123)), .float(0.123)]
+        params: [.binary(Data.random(ofCount: 123)), .float(0.123)]
       )
 
       try! self.clientSocket.write(from: data1)
@@ -182,11 +176,11 @@ class RxMsgpackRpcr2Tests: XCTestCase {
     self.runClientAndSendRequests(readBufferSize: Socket.SOCKET_MINIMUM_READ_BUFFER_SIZE) {
       let data1 = dataForNotification(
         method: "first-msg",
-        params: [.uint(321), .binary(Data.randomData(ofCount: 321))]
+        params: [.uint(321), .binary(.random(ofCount: 321))]
       )
       let data2 = dataForNotification(
         method: "second-msg",
-        params: [.binary(Data.randomData(ofCount: 123)), .float(0.123)]
+        params: [.binary(.random(ofCount: 123)), .float(0.123)]
       )
 
       var msg1 = data1
@@ -310,5 +304,11 @@ class TestServer {
   func shutdownServer() {
     self.connectedSocket?.close()
     self.listenSocket?.close()
+  }
+}
+
+extension Data {
+  static func random(ofCount count: Int) -> Data {
+    Data((0..<count).map { _ in UInt8.random(in: UInt8.min...UInt8.max) })
   }
 }
