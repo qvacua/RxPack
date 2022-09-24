@@ -17,6 +17,10 @@ extension Data {
 }
 
 class RxMsgpackRpcr2Tests: XCTestCase {
+  typealias Value = RxMsgpackRpc.Value
+  typealias Message = RxMsgpackRpc.Message
+  typealias MessageType = RxMsgpackRpc.MessageType
+
   let testEndSemaphore = DispatchSemaphore(value: 0)
   let serverAcceptSemaphore = DispatchSemaphore(value: 0)
 
@@ -24,7 +28,8 @@ class RxMsgpackRpcr2Tests: XCTestCase {
   var clientSocket: Socket!
   let msgpackRpc = RxMsgpackRpc(queueQos: .default)
 
-  let scheduler = ConcurrentDispatchQueueScheduler(qos: .default)
+  var requestsFromClient = [[Value]]()
+  let responseScheduler = ConcurrentDispatchQueueScheduler(qos: .default)
   let disposeBag = DisposeBag()
 
   let uuid = UUID().uuidString
@@ -51,15 +56,179 @@ class RxMsgpackRpcr2Tests: XCTestCase {
     super.tearDown()
   }
 
-  func assertMsgsFromClient(assertFn: @escaping TestServer.DataReadCallback) {
-    self.server.dataReadCallback = assertFn
+  func testResponsesFromServer() {
+    let beginAssertionsSemaphore = DispatchSemaphore(value: 0)
+
+    self.assertMsgsFromClient { data, _ in
+      let request = try! unpackAll(data)[0].arrayValue!
+      expect(request).to(haveCount(4))
+      self.requestsFromClient.append(request)
+
+      if request[2].stringValue! == "second-request" {
+        beginAssertionsSemaphore.signal()
+      }
+    }
+
+    var responseCount = 0
+    self.runClientAndSendRequests(readBufferSize: Socket.SOCKET_MINIMUM_READ_BUFFER_SIZE) {
+      self.msgpackRpc
+        .request(method: "first-request", params: [.uint(123)], expectsReturnValue: true)
+        .observe(on: self.responseScheduler)
+        .subscribe { event in
+          guard case let .success(response) = event else {
+            preconditionFailure("No response for 1st request")
+          }
+
+          expect(response.msgid).to(equal(0))
+          expect(response.error).to(equal(.nil))
+          expect(response.result).to(equal(.float(0.321)))
+          responseCount += 1
+
+          self.signalEndOfTest()
+        }
+        .disposed(by: self.disposeBag)
+
+      self.msgpackRpc
+        .request(method: "second-request", params: [.uint(321)], expectsReturnValue: true)
+        .observe(on: self.responseScheduler)
+        .subscribe { event in
+          guard case let .success(response) = event else {
+            preconditionFailure("No response for 2nd request")
+          }
+
+          expect(response.msgid).to(equal(1))
+          expect(response.error).to(equal(.nil))
+          expect(response.result).to(equal(.float(0.123)))
+          responseCount += 1
+        }
+        .disposed(by: self.disposeBag)
+
+      let timeout = beginAssertionsSemaphore.wait(timeout: .now().advanced(by: .seconds(10)))
+      expect(timeout).to(equal(.success))
+
+      let request1 = self.requestsFromClient[0]
+      expect(request1[0].uint64Value).to(equal(MessageType.request.rawValue))
+      expect(request1[1].uint64Value).to(equal(0))
+      expect(request1[2].stringValue).to(equal("first-request"))
+      expect(request1[3].arrayValue).to(equal([.uint(123)]))
+
+      let request2 = self.requestsFromClient[1]
+      expect(request2[0].uint64Value).to(equal(MessageType.request.rawValue))
+      expect(request2[1].uint64Value).to(equal(1))
+      expect(request2[2].stringValue).to(equal("second-request"))
+      expect(request2[3].arrayValue).to(equal([.uint(321)]))
+
+      try! self.clientSocket
+        .write(from: self.dataForResponse(msgid: 1, error: .nil, params: .float(0.123)))
+
+      try! self.clientSocket
+        .write(from: self.dataForResponse(msgid: 0, error: .nil, params: .float(0.321)))
+    }
+
+    expect(responseCount).to(equal(2))
   }
 
-  func assertMsgsFromServer(assertFn: @escaping (RxMsgpackRpc.Message) -> Void) {
-    self.msgpackRpc.stream
-      .observe(on: self.scheduler)
-      .subscribe(onNext: assertFn)
-      .disposed(by: self.disposeBag)
+  func testNotificationsFromServer() {
+    DispatchQueue.global(qos: .default).async {
+      let msgs = try! self.msgpackRpc.stream.toBlocking().toArray()
+      expect(msgs).to(haveCount(2))
+
+      let (method1, params1) = self.notification(from: msgs[0])
+      let (method2, params2) = self.notification(from: msgs[1])
+
+      expect(method1).to(equal("first-msg"))
+      expect(params1).to(haveCount(2))
+      expect(params1[0].uintValue).to(equal(321))
+      expect(params1[1].dataValue).to(haveCount(321))
+
+      expect(method2).to(equal("second-msg"))
+      expect(params2).to(haveCount(2))
+      expect(params2[0].dataValue).to(haveCount(123))
+      expect(params2[1].floatValue).to(equal(0.123))
+
+      self.signalEndOfTest()
+    }
+
+    self.runClientAndSendRequests(readBufferSize: Socket.SOCKET_MINIMUM_READ_BUFFER_SIZE) {
+      let data1 = dataForNotification(
+        method: "first-msg",
+        params: [.uint(321), .binary(Data.randomData(ofCount: 321))]
+      )
+      let data2 = dataForNotification(
+        method: "second-msg",
+        params: [.binary(Data.randomData(ofCount: 123)), .float(0.123)]
+      )
+
+      try! self.clientSocket.write(from: data1)
+      try! self.clientSocket.write(from: data2)
+
+      self.server.shutdownServer()
+    }
+  }
+
+  func testPartialRequestFromServer() {
+    DispatchQueue.global(qos: .default).async {
+      let msgs = try! self.msgpackRpc.stream.toBlocking().toArray()
+      expect(msgs).to(haveCount(2))
+
+      let (method1, params1) = self.notification(from: msgs[0])
+      let (method2, params2) = self.notification(from: msgs[1])
+
+      expect(method1).to(equal("first-msg"))
+      expect(params1).to(haveCount(2))
+      expect(params1[0].uintValue).to(equal(321))
+      expect(params1[1].dataValue).to(haveCount(321))
+
+      expect(method2).to(equal("second-msg"))
+      expect(params2).to(haveCount(2))
+      expect(params2[0].dataValue).to(haveCount(123))
+      expect(params2[1].floatValue).to(equal(0.123))
+
+      self.signalEndOfTest()
+    }
+
+    self.runClientAndSendRequests(readBufferSize: Socket.SOCKET_MINIMUM_READ_BUFFER_SIZE) {
+      let data1 = dataForNotification(
+        method: "first-msg",
+        params: [.uint(321), .binary(Data.randomData(ofCount: 321))]
+      )
+      let data2 = dataForNotification(
+        method: "second-msg",
+        params: [.binary(Data.randomData(ofCount: 123)), .float(0.123)]
+      )
+
+      var msg1 = data1
+      msg1.append(data2[..<100])
+      let msg2 = data2[100...]
+
+      try! self.clientSocket.write(from: msg1)
+      try! self.clientSocket.write(from: msg2)
+
+      self.server.shutdownServer()
+    }
+  }
+}
+
+extension RxMsgpackRpcr2Tests {
+  func dataForResponse(msgid: UInt64, error: Value, params: Value) -> Data {
+    pack(.array([
+      .uint(MessageType.response.rawValue),
+      .uint(msgid),
+      error,
+      params,
+    ]))
+  }
+
+  func dataForNotification(method: String, params: [Value]) -> Data {
+    pack(.array([
+      .uint(MessageType.notification.rawValue),
+      .string(method),
+      .array(params),
+    ]))
+  }
+
+  func assertMsgsFromClient(assertFn: @escaping TestServer.DataReadCallback) {
+    self.server.dataReadCallback = assertFn
   }
 
   func runClientAndSendRequests(readBufferSize: Int, requestFn: () -> Void) {
@@ -84,49 +253,12 @@ class RxMsgpackRpcr2Tests: XCTestCase {
     expect(timeoutResult).to(equal(.success))
   }
 
-  func testSomething() {
-    self.server.readBufferSize = Socket.SOCKET_MINIMUM_READ_BUFFER_SIZE
-
-    self.assertMsgsFromClient { data, _ in
-      // Assert msgs from client here
-      let value = try! unpackAll(data)
-      print(value)
+  func notification(from msg: Message) -> (method: String, params: [Value]) {
+    guard case let .notification(method, params) = msg else {
+      preconditionFailure("\(msg) is not a notification")
     }
 
-    self.assertMsgsFromServer { msg in
-      switch msg {
-      case let .response(msgid, error, result):
-        break
-      case let .notification(method, params):
-        if method == "notification-data-int" {
-          print("got message: \(params)")
-          _ = try? self.msgpackRpc.stop().toBlocking().first()
-          self.server.shutdownServer()
-          self.signalEndOfTest()
-        }
-      default:
-        break
-      }
-    }
-
-    self.runClientAndSendRequests(readBufferSize: Socket.SOCKET_MINIMUM_READ_BUFFER_SIZE) {
-      // Send msgs to server
-      _ = try? self.msgpackRpc
-        .request(
-          method: "first-method",
-          params: [.uint(0), .uint(1)],
-          expectsReturnValue: false
-        )
-        .toBlocking().first()
-
-      // Send msgs to client
-      try! self.clientSocket
-        .write(from: pack(.array([
-          .uint(RxMsgpackRpc.MessageType.notification.rawValue),
-          .string("notification-data-int"),
-          .array([.binary(Data.randomData(ofCount: 1024 * 1024)), .uint(17)]),
-        ])))
-    }
+    return (method: method, params: params)
   }
 }
 
@@ -162,7 +294,10 @@ class TestServer {
 
       var readData = Data(capacity: self.readBufferSize)
       repeat {
-        let bytesRead = try! socket.read(into: &readData)
+        guard let bytesRead = try? socket.read(into: &readData) else {
+          shouldKeepRunning = false
+          break
+        }
 
         if bytesRead > 0 {
           self.dataReadCallback(readData, bytesRead)

@@ -181,7 +181,7 @@ public final class RxMsgpackRpc {
   private func cleanUpAndCloseSocket() {
     self.streamSubject.onCompleted()
 
-    self.singles.forEach { msgid, single in single(.success(self.nilResponse(with: msgid))) }
+    self.singles.forEach { msgid, single in single(.failure(Error(msg: "Socket closed"))) }
     self.singles.removeAll()
 
     self.socket?.close()
