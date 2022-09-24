@@ -8,6 +8,8 @@ import RxSwift
 import Socket
 
 public final class RxMsgpackRpc {
+  public static let defaultReadBufferSize = 10240
+
   public typealias Value = MessagePackValue
 
   enum MessageType: UInt64 {
@@ -62,14 +64,19 @@ public final class RxMsgpackRpc {
     )
   }
 
-  public func run(at path: String) -> Completable {
+  public func run(
+    at path: String,
+    readBufferSize: Int = RxMsgpackRpc.defaultReadBufferSize
+  ) -> Completable {
     Completable.create { completable in
       self.queue.async {
         do {
           try self.socket = Socket.create(family: .unix, type: .stream, proto: .unix)
+          self.socket?.readBufferSize = readBufferSize
           try self.socket?.connect(to: path)
           self.setUpThreadAndStartReading()
         } catch {
+          self.socket = nil
           self.streamSubject.onError(Error(msg: "Could not get socket", cause: error))
           completable(.error(Error(msg: "Could not get socket at \(path)", cause: error)))
         }
@@ -129,14 +136,14 @@ public final class RxMsgpackRpc {
         if expectsReturnValue { self.singles[msgid] = single }
 
         do {
-          let writtenBytes = try socket.write(from: packed)
-          if writtenBytes < packed.count {
-            single(.failure(Error(
-              msg: "(Written) = \(writtenBytes) < \(packed.count) = " +
-                "(requested) for msg id: \(msgid)"
-            )))
-
-            return
+          var remainder: Data? = packed
+          while let dataToSend = remainder {
+            let writtenBytes = try socket.write(from: dataToSend)
+            if writtenBytes < dataToSend.count {
+              remainder = packed.suffix(from: writtenBytes)
+            } else {
+              remainder = nil
+            }
           }
         } catch {
           self.streamSubject.onError(Error(
@@ -184,13 +191,18 @@ public final class RxMsgpackRpc {
     self.thread = Thread {
       guard let socket = self.socket else { return }
 
-      var readData = Data(capacity: 10240)
+      var dataToUnmarshall = Data(capacity: Self.defaultReadBufferSize)
       repeat {
         do {
+          var readData = Data(capacity: Self.defaultReadBufferSize)
           let readBytes = try socket.read(into: &readData)
-          defer { readData.count = 0 }
+
           if readBytes > 0 {
-            let values = try MPackUnpacker.unpackAll(from: readData)
+            dataToUnmarshall.append(readData)
+            let (values, remainderData) = try self.unpackAllWithReminder(dataToUnmarshall)
+            if let remainderData { dataToUnmarshall = remainderData }
+            else { dataToUnmarshall.count = 0 }
+
             values.forEach(self.processMessage)
           } else if readBytes == 0 {
             if socket.remoteConnectionClosed {
@@ -279,6 +291,25 @@ public final class RxMsgpackRpc {
       ))
       return
     }
+  }
+
+  private func unpackAllWithReminder(_ data: Data) throws -> (values: [Value], remainder: Data?) {
+    var values = [Value]()
+    var remainderData: Data?
+
+    var data = Subdata(data: data)
+    while !data.isEmpty {
+      let value: Value
+      do {
+        (value, data) = try unpack(data, compatibility: false)
+        values.append(value)
+      } catch MessagePackError.insufficientData {
+        remainderData = data.data
+        break
+      }
+    }
+
+    return (values, remainderData)
   }
 
   private func processResponse(msgid: UInt32, error: Value, result: Value) {
