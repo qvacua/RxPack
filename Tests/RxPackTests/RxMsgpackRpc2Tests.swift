@@ -27,14 +27,21 @@ class RxMsgpackRpcr2Tests: XCTestCase {
   let scheduler = ConcurrentDispatchQueueScheduler(qos: .default)
   let disposeBag = DisposeBag()
 
+  let uuid = UUID().uuidString
+
   override func setUp() {
     super.setUp()
 
     self.server = TestSocketServer()
     self.server.path = FileManager.default
       .temporaryDirectory
-      .appendingPathComponent("\(UUID().uuidString).sock")
+      .appendingPathComponent("\(self.uuid).sock")
       .path
+
+    DispatchQueue.global(qos: .default).async {
+      self.clientSocket = self.server.clientSocket()
+      self.serverAcceptSemaphore.signal()
+    }
   }
 
   override func tearDown() {
@@ -55,7 +62,29 @@ class RxMsgpackRpcr2Tests: XCTestCase {
       .disposed(by: self.disposeBag)
   }
 
-  func testExample() {
+  func runClientAndSendRequests(readBufferSize: Int, requestFn: () -> Void) {
+    usleep(500)
+    _ = try! self.msgpackRpc
+      .run(at: self.server.path, readBufferSize: readBufferSize)
+      .toBlocking()
+      .first()
+    _ = self.serverAcceptSemaphore.wait(timeout: .now().advanced(by: .microseconds(500)))
+
+    requestFn()
+
+    self.waitForAssertions()
+  }
+
+  func signalEndOfTest() {
+    self.testEndSemaphore.signal()
+  }
+
+  func waitForAssertions() {
+    let timeoutResult = self.testEndSemaphore.wait(timeout: .now().advanced(by: .seconds(2 * 60)))
+    expect(timeoutResult).to(equal(.success))
+  }
+
+  func testSomething() {
     self.server.readBufferSize = Socket.SOCKET_MINIMUM_READ_BUFFER_SIZE
 
     self.assertMsgsFromClient { data, _ in
@@ -73,23 +102,14 @@ class RxMsgpackRpcr2Tests: XCTestCase {
           print("got message: \(params)")
           _ = try? self.msgpackRpc.stop().toBlocking().first()
           self.server.shutdownServer()
-          self.testEndSemaphore.signal()
+          self.signalEndOfTest()
         }
       default:
         break
       }
     }
 
-    DispatchQueue.global(qos: .default).async {
-      self.clientSocket = self.server.clientSocket()
-      self.serverAcceptSemaphore.signal()
-    }
-
-    DispatchQueue.global(qos: .default).async {
-      usleep(500)
-      _ = try! self.msgpackRpc.run(at: self.server.path, readBufferSize: 1024).toBlocking().first()
-      _ = self.serverAcceptSemaphore.wait(timeout: .now().advanced(by: .microseconds(500)))
-
+    self.runClientAndSendRequests(readBufferSize: Socket.SOCKET_MINIMUM_READ_BUFFER_SIZE) {
       // Send msgs to server
       _ = try? self.msgpackRpc
         .request(
@@ -104,13 +124,9 @@ class RxMsgpackRpcr2Tests: XCTestCase {
         .write(from: pack(.array([
           .uint(RxMsgpackRpc.MessageType.notification.rawValue),
           .string("notification-data-int"),
-          .array([.binary(Data.randomData(ofCount: 1024 * 1024)),
-                  .uint(17)]),
+          .array([.binary(Data.randomData(ofCount: 1024 * 1024)), .uint(17)]),
         ])))
     }
-
-    let timeoutResult = self.testEndSemaphore.wait(timeout: .now().advanced(by: .seconds(2 * 60)))
-    expect(timeoutResult).to(equal(.success))
   }
 }
 
