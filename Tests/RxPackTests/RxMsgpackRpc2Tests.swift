@@ -138,11 +138,11 @@ class RxMsgpackRpcr2Tests: XCTestCase {
     self.runClientAndSendRequests(readBufferSize: Socket.SOCKET_MINIMUM_READ_BUFFER_SIZE) {
       let data1 = dataForNotification(
         method: "first-msg",
-        params: [.uint(321), .binary(Data.random(ofCount: 321))]
+        params: [.uint(321), .binary(.random(ofCount: 321))]
       )
       let data2 = dataForNotification(
         method: "second-msg",
-        params: [.binary(Data.random(ofCount: 123)), .float(0.123)]
+        params: [.binary(.random(ofCount: 123)), .float(0.123)]
       )
 
       try! self.clientSocket.write(from: data1)
