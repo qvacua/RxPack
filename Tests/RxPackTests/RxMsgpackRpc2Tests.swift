@@ -20,7 +20,7 @@ class RxMsgpackRpcr2Tests: XCTestCase {
   let testEndSemaphore = DispatchSemaphore(value: 0)
   let serverAcceptSemaphore = DispatchSemaphore(value: 0)
 
-  var server: TestSocketServer!
+  var server: TestServer!
   var clientSocket: Socket!
   let msgpackRpc = RxMsgpackRpc(queueQos: .default)
 
@@ -32,7 +32,7 @@ class RxMsgpackRpcr2Tests: XCTestCase {
   override func setUp() {
     super.setUp()
 
-    self.server = TestSocketServer()
+    self.server = TestServer()
     self.server.path = FileManager.default
       .temporaryDirectory
       .appendingPathComponent("\(self.uuid).sock")
@@ -51,7 +51,7 @@ class RxMsgpackRpcr2Tests: XCTestCase {
     super.tearDown()
   }
 
-  func assertMsgsFromClient(assertFn: @escaping TestSocketServer.DataReadCallback) {
+  func assertMsgsFromClient(assertFn: @escaping TestServer.DataReadCallback) {
     self.server.dataReadCallback = assertFn
   }
 
@@ -131,17 +131,17 @@ class RxMsgpackRpcr2Tests: XCTestCase {
 }
 
 /// Modified version of the example in the README of https://github.com/Kitura/BlueSocket.
-/// Only supports one connection.
-class TestSocketServer {
+/// It only supports one connection. Everywhere ! and no error handling whatsoever.
+class TestServer {
   typealias DataReadCallback = (Data, Int) -> Void
-
-  private var listenSocket: Socket!
 
   var connectedSocket: Socket!
 
   var path: String = "/tmp/com.qvacua.RxMsgpackRpc.RxMsgpackRpcTest.sock"
   var readBufferSize: Int = Socket.SOCKET_MINIMUM_READ_BUFFER_SIZE
   var dataReadCallback: DataReadCallback = { _, _ in }
+
+  private var listenSocket: Socket!
 
   deinit { self.shutdownServer() }
 
