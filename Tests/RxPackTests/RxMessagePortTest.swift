@@ -23,7 +23,7 @@ class RxMessagePortTest: XCTestCase {
 
     self.server
       .stream
-      .subscribe { message in Swift.print(message) }
+      .subscribe(onNext: nil)
       .disposed(by: self.disposeBag)
 
     _ = try! self.server
