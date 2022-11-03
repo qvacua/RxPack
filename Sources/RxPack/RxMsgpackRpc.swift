@@ -3,7 +3,6 @@
 
 import Foundation
 import MessagePack
-import MPack
 import RxSwift
 import Socket
 
