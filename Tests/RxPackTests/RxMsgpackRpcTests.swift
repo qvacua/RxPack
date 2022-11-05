@@ -66,13 +66,19 @@ class RxMsgpackRpcrTests: XCTestCase {
     let beginAssertionCond = NSCondition()
 
     self.assertMsgsFromClient { data, _ in
-      // WARNING: Sometimes, the first and the second message get coalesced to one read operation
-      // by the server.
-      for request in try! unpackAll(data).map(\.arrayValue!) {
+      // WARNING:
+      // - Sometimes, the first and the second message get coalesced to one read operation by the
+      // server.
+      // - Sometimes, second message arrives first.
+      let requests = try! unpackAll(data)
+        .map(\.arrayValue!)
+        .sorted { left, right in left[2].stringValue! < right[2].stringValue! }
+
+      for request in requests {
         expect(request).to(haveCount(4))
         self.requestsFromClient.append(request)
 
-        if request[2].stringValue! == "second-request" {
+        if request[2].stringValue! == "2-second-request" {
           beginAssertionCond.lock()
           beginAssertion = true
           beginAssertionCond.signal()
@@ -84,10 +90,9 @@ class RxMsgpackRpcrTests: XCTestCase {
     var responseCount = 0
     self.sendRequests {
       self.msgpackRpc
-        .request(method: "first-request", params: [.uint(123)], expectsReturnValue: true)
+        .request(method: "1-first-request", params: [.uint(123)], expectsReturnValue: true)
         .subscribe(on: self.responseScheduler)
         .subscribe(onSuccess: { response in
-          expect(response.msgid).to(equal(0))
           expect(response.error).to(equal(.nil))
           expect(response.result).to(equal(.float(0.321)))
           responseCount += 1
@@ -97,10 +102,9 @@ class RxMsgpackRpcrTests: XCTestCase {
         .disposed(by: self.disposeBag)
 
       self.msgpackRpc
-        .request(method: "second-request", params: [.uint(321)], expectsReturnValue: true)
+        .request(method: "2-second-request", params: [.uint(321)], expectsReturnValue: true)
         .subscribe(on: self.responseScheduler)
         .subscribe(onSuccess: { response in
-          expect(response.msgid).to(equal(1))
           expect(response.error).to(equal(.nil))
           expect(response.result).to(equal(.float(0.123)))
           responseCount += 1
@@ -115,14 +119,12 @@ class RxMsgpackRpcrTests: XCTestCase {
 
       let request1 = self.requestsFromClient[0]
       expect(request1[0].uint64Value).to(equal(MessageType.request.rawValue))
-      expect(request1[1].uint64Value).to(equal(0))
-      expect(request1[2].stringValue).to(equal("first-request"))
+      expect(request1[2].stringValue).to(equal("1-first-request"))
       expect(request1[3].arrayValue).to(equal([.uint(123)]))
 
       let request2 = self.requestsFromClient[1]
       expect(request2[0].uint64Value).to(equal(MessageType.request.rawValue))
-      expect(request2[1].uint64Value).to(equal(1))
-      expect(request2[2].stringValue).to(equal("second-request"))
+      expect(request2[2].stringValue).to(equal("2-second-request"))
       expect(request2[3].arrayValue).to(equal([.uint(321)]))
 
       try! self.clientSocket
